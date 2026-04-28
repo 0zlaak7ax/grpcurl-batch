@@ -1,0 +1,34 @@
+# Example grpcurl-batch configuration file
+# Run with: grpcurl-batch run --config testdata/example-batch.yaml
+
+requests:
+  - name: list-users
+    address: localhost:50051
+    service: users.UserService
+    method: ListUsers
+    data: '{"page": 1, "page_size": 10}'
+    headers:
+      authorization: Bearer <token>
+      x-request-id: req-001
+
+  - name: get-user
+    address: localhost:50051
+    service: users.UserService
+    method: GetUser
+    data: '{"id": "abc123"}'
+    headers:
+      authorization: Bearer <token>
+
+  - name: health-check
+    address: localhost:50051
+    service: grpc.health.v1.Health
+    method: Check
+    data: '{"service": ""}'
+
+retry:
+  max_attempts: 3
+  delay: 1s
+
+output:
+  format: json
+  verbose: false
