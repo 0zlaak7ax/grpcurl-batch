@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -43,8 +44,8 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	if cfg.Address == "" {
-		return nil, errors.New("config: address is required")
+	if err := cfg.validate(); err != nil {
+		return nil, err
 	}
 
 	if cfg.Retry.MaxAttempts == 0 {
@@ -55,4 +56,18 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// validate checks that all required fields are present and that request
+// definitions are well-formed.
+func (c *Config) validate() error {
+	if c.Address == "" {
+		return errors.New("config: address is required")
+	}
+	for i, r := range c.Requests {
+		if r.Method == "" {
+			return fmt.Errorf("config: request[%d] (%q): method is required", i, r.Name)
+		}
+	}
+	return nil
 }
