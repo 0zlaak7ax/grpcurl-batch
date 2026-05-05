@@ -1,74 +1,74 @@
+// Package runner orchestrates the execution of batched gRPC requests,
+// applying retries and rate limiting as configured.
 package runner
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"sync"
 	"time"
 
-	"github.com/user/grpcurl-batch/internal/config"
+	"github.com/yourorg/grpcurl-batch/internal/config"
+	"github.com/yourorg/grpcurl-batch/internal/executor"
+	"github.com/yourorg/grpcurl-batch/internal/formatter"
+	"github.com/yourorg/grpcurl-batch/internal/ratelimit"
 )
 
-// Result holds the outcome of a single gRPC request.
-type Result struct {
-	Name    string
-	Success bool
-	Output  string
-	Err     error
-	Attempts int
-}
-
-// Executor defines how a single grpcurl call is made.
-type Executor interface {
-	Execute(ctx context.Context, req config.Request) (string, error)
-}
-
-// Runner executes batched gRPC requests from a config.
+// Runner executes a batch of gRPC requests.
 type Runner struct {
-	cfg      *config.Config
-	executor Executor
+	cfg     *config.Config
+	exec    executor.Executor
+	limiter *ratelimit.Limiter
 }
 
-// New creates a Runner with the provided config and executor.
-func New(cfg *config.Config, executor Executor) *Runner {
-	return &Runner{cfg: cfg, executor: executor}
+// New constructs a Runner from the given configuration and executor.
+func New(cfg *config.Config, exec executor.Executor) *Runner {
+	l := ratelimit.New(ratelimit.Config{
+		MaxConcurrent: cfg.MaxConcurrent,
+		Interval:      cfg.RateInterval,
+	})
+	return &Runner{cfg: cfg, exec: exec, limiter: l}
 }
 
-// Run executes all requests defined in the config and returns results.
-func (r *Runner) Run(ctx context.Context) []Result {
-	results := make([]Result, 0, len(r.cfg.Requests))
-	for _, req := range r.cfg.Requests {
-		res := r.runWithRetry(ctx, req)
-		results = append(results, res)
+// Run executes all requests in the config concurrently (bounded by the limiter)
+// and returns a slice of results.
+func (r *Runner) Run(ctx context.Context) []formatter.Result {
+	results := make([]formatter.Result, len(r.cfg.Requests))
+	var wg sync.WaitGroup
+
+	for i, req := range r.cfg.Requests {
+		wg.Add(1)
+		go func(idx int, req config.Request) {
+			defer wg.Done()
+			if err := r.limiter.Acquire(ctx); err != nil {
+				results[idx] = formatter.Result{Name: req.Name, Err: err}
+				return
+			}
+			defer r.limiter.Release()
+			results[idx] = r.executeWithRetry(ctx, req)
+		}(i, req)
 	}
+
+	wg.Wait()
 	return results
 }
 
-func (r *Runner) runWithRetry(ctx context.Context, req config.Request) Result {
-	maxAttempts := r.cfg.Retry.MaxAttempts
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-
-	result := Result{Name: req.Name}
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		result.Attempts = attempt
-		output, err := r.executor.Execute(ctx, req)
+func (r *Runner) executeWithRetry(ctx context.Context, req config.Request) formatter.Result {
+	var lastErr error
+	for attempt := 1; attempt <= r.cfg.MaxRetries; attempt++ {
+		out, err := r.exec.Execute(ctx, r.cfg, req)
 		if err == nil {
-			result.Success = true
-			result.Output = output
-			return result
+			return formatter.Result{Name: req.Name, Output: out, Attempts: attempt}
 		}
-		result.Err = err
-		log.Printf("[%s] attempt %d/%d failed: %v", req.Name, attempt, maxAttempts, err)
-		if attempt < maxAttempts {
+		lastErr = err
+		log.Printf("[%s] attempt %d/%d failed: %v", req.Name, attempt, r.cfg.MaxRetries, err)
+		if attempt < r.cfg.MaxRetries {
 			select {
+			case <-time.After(r.cfg.RetryDelay):
 			case <-ctx.Done():
-				result.Err = fmt.Errorf("context cancelled: %w", ctx.Err())
-				return result
-			case <-time.After(r.cfg.Retry.Delay):
+				return formatter.Result{Name: req.Name, Err: ctx.Err(), Attempts: attempt}
 			}
 		}
 	}
-	return result
+	return formatter.Result{Name: req.Name, Err: lastErr, Attempts: r.cfg.MaxRetries}
 }
