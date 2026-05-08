@@ -26,3 +26,10 @@ func DefaultLinear() *Linear {
 		Max:  10 * time.Second,
 	}
 }
+
+// ConservativeExponential returns a slow-starting exponential backoff suitable
+// for rate-limited or quota-sensitive environments: starts at 1 s, caps at
+// 5 min, jitter enabled to spread retries across multiple clients.
+func ConservativeExponential() *Exponential {
+	return New(time.Second, 5*time.Minute, true)
+}
