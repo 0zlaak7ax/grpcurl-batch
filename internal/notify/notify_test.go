@@ -84,3 +84,20 @@ func TestWebhook_Notify_ContextCancelled(t *testing.T) {
 		t.Fatal("expected error for cancelled context")
 	}
 }
+
+func TestWebhook_Notify_ContentType(t *testing.T) {
+	var contentType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentType = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	wh := notify.NewWebhook(srv.URL)
+	if err := wh.Notify(context.Background(), exampleSummary); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(contentType, "application/json") {
+		t.Errorf("expected Content-Type application/json, got %q", contentType)
+	}
+}
